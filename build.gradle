@@ -1,7 +1,9 @@
 apply plugin: 'java'
+apply plugin: 'application'
 
-sourceCompatibility = 1.5
+sourceCompatibility = 1.7
 version = '1.0'
+mainClassName = "redis.server.Main"
 
 repositories {
     mavenCentral()
@@ -12,5 +14,5 @@ dependencies {
     compile 'com.google.guava:guava:18.0'
     compile 'io.netty:netty-all:4.0.10.Final'
     compile 'com.github.spullara.cli-parser:cli-parser:1.1'
-    compile 'org.redis.server.backend.mapdb:redis.server.backend.mapdb:1.0.6'
+    compile 'org.mapdb:mapdb:1.0.6'
 }

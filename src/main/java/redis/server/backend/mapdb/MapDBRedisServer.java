@@ -29,7 +29,8 @@ public class MapDBRedisServer implements RedisServer {
     protected Map<byte[], byte[]> values;
 
     public MapDBRedisServer() {
-        db = DBMaker.newFileDB(new File("d:/redis.server.backend.mapdb/redis"))
+        // TODO: make this a config parameter
+        db = DBMaker.newFileDB(new File("d:/mapdb/redis"))
                 .mmapFileEnableIfSupported()
                 .closeOnJvmShutdown()
                 .make();

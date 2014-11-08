@@ -1,0 +1,16 @@
+apply plugin: 'java'
+
+sourceCompatibility = 1.5
+version = '1.0'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    testCompile group: 'junit', name: 'junit', version: '4.11'
+    compile 'com.google.guava:guava:18.0'
+    compile 'io.netty:netty-all:4.0.10.Final'
+    compile 'com.github.spullara.cli-parser:cli-parser:1.1'
+    compile 'org.redis.server.backend.mapdb:redis.server.backend.mapdb:1.0.6'
+}

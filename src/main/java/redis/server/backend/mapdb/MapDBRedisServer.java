@@ -23,22 +23,29 @@ import static redis.util.Encoding.numToBytes;
  */
 public class MapDBRedisServer implements RedisServer {
     protected DB db;
+    protected boolean commit;
 
     // TODO: should keys contain metadata, not just a set?
     protected NavigableSet<byte[]> keys;
     protected Map<byte[], byte[]> values;
 
-    public MapDBRedisServer() {
-        // TODO: make this a config parameter
-        db = DBMaker.newFileDB(new File("d:/mapdb/redis"))
-                .mmapFileEnableIfSupported()
-                .closeOnJvmShutdown()
-                .make();
+    enum Type {
+        STRING("string"),
+        HASH("hash"),
+        LIST("list"),
+        ZSET("zset"),
+        SET("set");
 
-        // TODO: we can use redis.server.backend.mapdb.bindings
-        keys = db.createTreeSet("__keys")
-                .comparator(Fun.BYTE_ARRAY_COMPARATOR)
-                .makeOrGet();
+        String name;
+        Type(String str) {
+            this.name = str;
+        }
+    }
+
+    public MapDBRedisServer(DB db, boolean commit) {
+        this.db = db;
+        this.commit = commit;
+
         values = db.createTreeMap("__values")
                 .comparator(Fun.BYTE_ARRAY_COMPARATOR)
                 .makeOrGet();
@@ -54,9 +61,20 @@ public class MapDBRedisServer implements RedisServer {
             throw new RedisException("wrong number of arguments for KEYS");
         }
         List<Reply<ByteBuf>> replies = new ArrayList<Reply<ByteBuf>>();
-        Iterator<byte[]> it = keys.iterator();
-        while (it.hasNext()) {
-            byte[] bytes = it.next();
+
+        // we get keys from multiple locations
+        for(Map.Entry<String, Object> iter : db.getAll().entrySet()) {
+            if(iter.getKey().equals("__values")) {
+               continue;
+            }
+            byte [] bytes = iter.getKey().getBytes();
+            if (matches(bytes, pattern0, 0, 0)) {
+                replies.add(new BulkReply(bytes));
+            }
+        }
+        // values
+        for(Map.Entry<byte[], byte[]> iter : values.entrySet()) {
+            byte [] bytes = iter.getKey();
             if (matches(bytes, pattern0, 0, 0)) {
                 replies.add(new BulkReply(bytes));
             }
@@ -82,29 +100,59 @@ public class MapDBRedisServer implements RedisServer {
     }
 
     @Override
+    public MultiBulkReply mget(byte[][] key0) throws RedisException {
+        int length = key0.length;
+        Reply[] replies = new Reply[length];
+        for (int i = 0; i < length; i++) {
+            Object o = values.get(key0[i]);
+            if (o instanceof byte[]) {
+                replies[i] = new BulkReply((byte[]) o);
+            } else {
+                replies[i] = BulkReply.NIL_REPLY;
+            }
+        }
+        return new MultiBulkReply(replies);
+    }
+
+    @Override
     public IntegerReply del(byte[][] key0) throws RedisException {
         int total = 0;
-        // TODO: support deleting other key types (zset...)
-        // db.get("key")
         for (byte[] bytes : key0) {
-            Object remove = values.remove(bytes);
+            Type type = _gettype(bytes);
 
-            keys.remove(bytes);
-            if (remove != null) {
+            if(type == Type.STRING) {
+                Object remove = values.remove(bytes);
+                if (remove != null) {
+                    total++;
+                }
+            } else if(type != null) {
+                db.delete(new String(bytes));
                 total++;
             }
         }
-        db.commit();
+        if(commit) db.commit();
         return integer(total);
     }
 
     @Override
     public StatusReply set(byte[] key0, byte[] value1) throws RedisException {
-        keys.add(key0);
         values.put(key0, value1);
-        db.commit();
+        if(commit) db.commit();
         return StatusReply.OK;
     }
+
+    @Override
+    public StatusReply mset(byte[][] key_or_value0) throws RedisException {
+        int length = key_or_value0.length;
+        if (length % 2 != 0) {
+            throw new RedisException("wrong number of arguments for MSET");
+        }
+        for (int i = 0; i < length; i += 2) {
+            values.put(key_or_value0[i], key_or_value0[i + 1]);
+        }
+        return OK;
+    }
+
 
     @Override
     public IntegerReply incr(byte[] key0) throws RedisException {
@@ -131,6 +179,19 @@ public class MapDBRedisServer implements RedisServer {
         return _change(key0, -bytesToNum(decrement1));
     }
 
+    private Type _gettype(byte[] key0) {
+        if(values.containsKey(key0)) {
+            return Type.STRING;
+        }
+
+        Object rootKey = db.get(new String(key0));
+        if(rootKey != null) {
+            // TODO: this is wrong
+            return Type.HASH;
+        }
+        return null;
+    }
+
     private IntegerReply _change(byte[] key0, long delta) throws RedisException {
         Object o = values.get(key0);
         IntegerReply ret = null;
@@ -149,8 +210,7 @@ public class MapDBRedisServer implements RedisServer {
             throw notInteger();
         }
 
-        keys.add(key0);
-        db.commit();
+        if(commit) db.commit();
         return ret;
     }
 
@@ -173,7 +233,7 @@ public class MapDBRedisServer implements RedisServer {
         } else {
             throw notInteger();
         }
-        db.commit();
+        if(commit) db.commit();
         return ret;
     }
 
@@ -189,8 +249,6 @@ public class MapDBRedisServer implements RedisServer {
         byte[] key = args[0];
         MapDBSortedSet zset = MapDBSortedSet.get(db, key, true);
 
-        keys.add(key);
-
         // TODO: support add all in a single transaction
         int total = 0;
         for (int i = 1; i < args.length; i += 2) {
@@ -200,7 +258,7 @@ public class MapDBRedisServer implements RedisServer {
                 total++;
             }
         }
-        db.commit();
+        if(commit) db.commit();
         return integer(total);
     }
 
@@ -407,7 +465,7 @@ public class MapDBRedisServer implements RedisServer {
         Map<byte[], byte[]> hash = MapDBHash.get(db, key0, true);
         Object put = hash.put(field1, value2);
 
-        db.commit();
+        if(commit) db.commit();
         return put == null ? integer(1) : integer(0);
     }
 
@@ -431,7 +489,7 @@ public class MapDBRedisServer implements RedisServer {
         for (byte[] hkey : field1) {
             total += hash.remove(hkey) == null ? 0 : 1;
         }
-        db.commit();
+        if(commit) db.commit();
         return integer(total);
     }
 
@@ -468,7 +526,7 @@ public class MapDBRedisServer implements RedisServer {
             ret = value;
             hash.put(field1, numToBytes(value, false));
         }
-        db.commit();
+        if(commit) db.commit();
         return new IntegerReply(ret);
     }
 
@@ -489,7 +547,7 @@ public class MapDBRedisServer implements RedisServer {
             ret = bytes;
             hash.put(field1, bytes);
         }
-        db.commit();
+        if(commit) db.commit();
         return new BulkReply(ret);
     }
 
@@ -536,7 +594,7 @@ public class MapDBRedisServer implements RedisServer {
         for (int i = 0; i < field_or_value1.length; i += 2) {
             hash.put(field_or_value1[i], field_or_value1[i + 1]);
         }
-        db.commit();
+        if(commit) db.commit();
         return OK;
     }
 
@@ -546,7 +604,7 @@ public class MapDBRedisServer implements RedisServer {
         byte[] bytes = hash.get(field1);
         if (bytes == null) {
             hash.put(field1, value2);
-            db.commit();
+            if(commit) db.commit();
             return integer(1);
         } else {
             return integer(0);
@@ -576,7 +634,7 @@ public class MapDBRedisServer implements RedisServer {
         for (byte[] bytes : member1) {
             if (set.add(bytes)) total++;
         }
-        db.commit();
+        if(commit) db.commit();
         return integer(total);
     }
 
@@ -905,16 +963,6 @@ public class MapDBRedisServer implements RedisServer {
 
     @Override
     public BulkReply getset(byte[] key0, byte[] value1) throws RedisException {
-        return null;
-    }
-
-    @Override
-    public MultiBulkReply mget(byte[][] key0) throws RedisException {
-        return null;
-    }
-
-    @Override
-    public StatusReply mset(byte[][] key_or_value0) throws RedisException {
         return null;
     }
 

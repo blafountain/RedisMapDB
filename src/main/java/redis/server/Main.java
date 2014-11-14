@@ -11,7 +11,10 @@ import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.util.concurrent.DefaultEventExecutorGroup;
+import org.mapdb.DB;
+import redis.server.backend.mapdb.MapDBRedisBuilder;
 import redis.server.backend.mapdb.MapDBRedisServer;
+import redis.server.backend.simple.SimpleRedisServer;
 
 /**
  * Redis server
@@ -19,6 +22,27 @@ import redis.server.backend.mapdb.MapDBRedisServer;
 public class Main {
     @Argument(alias = "p")
     private static Integer port = 6380;
+
+    // TODO: move this stuff out to configuration files
+    // mapdb
+    @Argument(alias = "l")
+    private static String location = "/tmp/redismapdb";
+
+    @Argument(alias = "m")
+    private static Boolean dbMemory = false;
+
+    @Argument(alias = "t")
+    private static Boolean dbTransactions = false;
+
+    @Argument(alias = "c")
+    private static Boolean dbCommit = false;
+
+    //
+    @Argument(alias = "backend")
+    private static String backend = "mapdb";
+
+    @Argument(alias = "threads")
+    private static Integer threads = 1;
 
     public static void main(String[] args) throws InterruptedException {
         try {
@@ -28,13 +52,24 @@ public class Main {
             System.exit(1);
         }
 
-        // TODO: this will need to change, we can support multiple threads with the mapdb backend
-        // Only execute the command handler in a single thread
-        final RedisCommandHandler commandHandler = new RedisCommandHandler(new MapDBRedisServer());
+        RedisServer redisServer = null;
+
+        if(backend.equals("mapdb")) {
+            System.out.println(" -- " + dbMemory + " -- " + dbCommit + " -- " + dbTransactions);
+            DB db = MapDBRedisBuilder.generateDB(location, dbMemory, dbTransactions);
+
+            redisServer = new MapDBRedisServer(db, dbCommit);
+        } else {
+            // Only execute the command handler in a single thread
+            threads = 1;
+            redisServer = new SimpleRedisServer();
+        }
+
+        final RedisCommandHandler commandHandler = new RedisCommandHandler(redisServer);
 
         // Configure the server.
         ServerBootstrap b = new ServerBootstrap();
-        final DefaultEventExecutorGroup group = new DefaultEventExecutorGroup(1);
+        final DefaultEventExecutorGroup group = new DefaultEventExecutorGroup(threads);
         try {
             b.group(new NioEventLoopGroup(), new NioEventLoopGroup())
                     .channel(NioServerSocketChannel.class)

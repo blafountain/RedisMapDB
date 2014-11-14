@@ -19,7 +19,7 @@ public class MapDBRedisBuilder {
             db.mmapFileEnableIfSupported();
         }
 
-        //if(!transactions)
+        if(!transactions)
         {
             db.transactionDisable();
         }
